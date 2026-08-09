@@ -7,7 +7,10 @@ mod util;
 
 pub use download::{download_url, DownloadOptions};
 pub use progress::{Phase, ProgressEvent};
-pub use util::{default_download_dir, format_eta, human_bytes, human_rate, sanitize_filename};
+pub use util::{
+    default_download_dir, distrohopper_line, find_ventoy_mounts, format_eta, human_bytes,
+    human_rate, sanitize_filename,
+};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

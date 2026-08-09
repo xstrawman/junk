@@ -8,7 +8,15 @@ junk <url>              # CLI, multi-conn
 junk                    # arcade TUI
 junk tui                # same
 junk -d ~/Downloads -c 16 <url>
+
+# Distrohopper express — mainline ISO straight to Ventoy
+junk --ventoy https://…/ubuntu.iso
+junk ventoy https://…/archlinux.iso
+junk ventoy https://…/fedora.iso   # same idea, subcommand form
 ```
+
+In the TUI, press **`v`** to lock the download dir onto a detected Ventoy mount.
+(Identity is a temporary filesystem.)
 
 ## Build
 
@@ -37,6 +45,7 @@ junk -c 32 https://a/file1 https://b/file2
 | `p` | Pause / resume |
 | `c` | Cancel active |
 | `d` | Change download dir |
+| `v` | **Ventoy** — dest = detected stick (distrohopper mode) |
 | `x` | Remove selected queued job |
 | `j` / `k` | Move selection |
 | `q` | Quit |

@@ -11,8 +11,8 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use junk_core::{
-    default_download_dir, download_url, format_eta, human_bytes, human_rate, DownloadOptions,
-    DownloadQueue, JobStatus, Phase, ProgressEvent,
+    default_download_dir, distrohopper_line, download_url, find_ventoy_mounts, format_eta,
+    human_bytes, human_rate, DownloadOptions, DownloadQueue, JobStatus, Phase, ProgressEvent,
 };
 use tokio::sync::mpsc;
 
@@ -20,12 +20,22 @@ use tokio::sync::mpsc;
 #[command(
     name = "junk",
     about = "Super-fast multi-connection HTTP(S) downloader — CLI + arcade syringe TUI",
+    long_about = "Multi-conn HTTP(S) downloader with neon arcade TUI.\n\n\
+Distrohopper special: send a mainline ISO straight to your Ventoy stick:\n  \
+  junk --ventoy https://…/ubuntu.iso\n  \
+  junk ventoy https://…/archlinux.iso\n\n\
+Identity is a temporary filesystem. The stick remembers.",
     version
 )]
 struct Cli {
     /// Download directory (default: XDG_DOWNLOAD_DIR or ~/Downloads)
     #[arg(short = 'd', long = "dir", global = true)]
     dir: Option<PathBuf>,
+
+    /// Download straight to a detected Ventoy mount (distrohopper mode)
+    /// (use long flag only — short `-V` is reserved for --version)
+    #[arg(long = "ventoy", global = true)]
+    ventoy: bool,
 
     /// Parallel connections per file (1–32, default 16)
     #[arg(short = 'c', long = "connections", default_value_t = 16, global = true)]
@@ -43,26 +53,99 @@ struct Cli {
 enum Commands {
     /// Launch the retro arcade TUI
     Tui,
+    /// Distrohopper mode: multi-conn ISO(s) straight onto Ventoy
+    #[command(about = "Mainline ISO → Ventoy. The stick of infinite reboots.")]
+    Ventoy {
+        /// ISO (or any file) URLs
+        urls: Vec<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let dir = cli.dir.unwrap_or_else(default_download_dir);
     let connections = cli.connections.clamp(1, 32);
 
     match cli.command {
         Some(Commands::Tui) => {
+            let dir = resolve_dir(cli.dir, cli.ventoy)?;
             tui_app::run(dir, connections).await?;
         }
+        Some(Commands::Ventoy { urls }) => {
+            if urls.is_empty() {
+                bail!(
+                    "ventoy mode needs a URL.\n\
+                     example: junk ventoy https://mirror.example/ubuntu.iso\n\
+                     \n{}",
+                    distrohopper_line("usage")
+                );
+            }
+            let dir = resolve_ventoy(None)?;
+            print_hopper_banner(&dir, &urls);
+            run_cli(dir, connections, urls).await?;
+        }
         None if cli.urls.is_empty() => {
+            let dir = resolve_dir(cli.dir, cli.ventoy)?;
             tui_app::run(dir, connections).await?;
         }
         None => {
+            let dir = resolve_dir(cli.dir, cli.ventoy)?;
+            if cli.ventoy {
+                print_hopper_banner(&dir, &cli.urls);
+            }
             run_cli(dir, connections, cli.urls).await?;
         }
     }
     Ok(())
+}
+
+fn resolve_dir(dir: Option<PathBuf>, ventoy: bool) -> Result<PathBuf> {
+    if let Some(d) = dir {
+        if ventoy {
+            eprintln!(
+                "note: --dir wins over --ventoy ({})",
+                d.display()
+            );
+        }
+        return Ok(d);
+    }
+    if ventoy {
+        return resolve_ventoy(None);
+    }
+    Ok(default_download_dir())
+}
+
+fn resolve_ventoy(prefer: Option<usize>) -> Result<PathBuf> {
+    let mounts = find_ventoy_mounts();
+    if mounts.is_empty() {
+        bail!(
+            "no Ventoy mount found under /run/media, /media, or /mnt.\n\
+             plug in the stick, mount it, try again.\n\
+             (or: junk -d /path/to/mount <url>)\n\
+             \n{}",
+            distrohopper_line("no-ventoy")
+        );
+    }
+    let idx = prefer.unwrap_or(0).min(mounts.len() - 1);
+    if mounts.len() > 1 {
+        eprintln!("found {} Ventoy mount(s):", mounts.len());
+        for (i, m) in mounts.iter().enumerate() {
+            let mark = if i == idx { "→" } else { " " };
+            eprintln!("  {mark} [{i}] {}", m.display());
+        }
+        eprintln!("using [{}] (set -d PATH to pick another)", idx);
+    }
+    Ok(mounts[idx].clone())
+}
+
+fn print_hopper_banner(dir: &std::path::Path, urls: &[String]) {
+    let ctx = format!("{}{}", dir.display(), urls.first().map(|s| s.as_str()).unwrap_or(""));
+    eprintln!("╔══════════════════════════════════════════════════════════╗");
+    eprintln!("║  JUNK · DISTROHOPPER EXPRESS · mainline ISO → VENTOY    ║");
+    eprintln!("╚══════════════════════════════════════════════════════════╝");
+    eprintln!("  dest: {}", dir.display());
+    eprintln!("  {}", distrohopper_line(&ctx));
+    eprintln!();
 }
 
 async fn run_cli(dir: PathBuf, connections: u32, urls: Vec<String>) -> Result<()> {

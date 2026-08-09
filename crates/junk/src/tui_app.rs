@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use junk_core::{
-    download_url, human_bytes, DownloadOptions, DownloadQueue, JobStatus, Phase, ProgressEvent,
+    distrohopper_line, download_url, find_ventoy_mounts, human_bytes, DownloadOptions,
+    DownloadQueue, JobStatus, Phase, ProgressEvent,
 };
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
@@ -322,6 +323,26 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                         app.dir_prompt = true;
                         app.input = app.queue.dir().display().to_string();
                     }
+                    KeyCode::Char('v') => {
+                        // Distrohopper: jump dest to Ventoy
+                        let mounts = find_ventoy_mounts();
+                        if mounts.is_empty() {
+                            app.error = Some(
+                                "no Ventoy mount — plug in the stick of infinite reboots".into(),
+                            );
+                            app.status = distrohopper_line("no-ventoy-tui").into();
+                        } else {
+                            let dest = mounts[0].clone();
+                            app.queue.set_dir(dest.clone());
+                            app.error = None;
+                            app.success_flash = true;
+                            app.status = format!(
+                                "VENTOY LOCKED → {}  ·  {}",
+                                dest.display(),
+                                distrohopper_line(&dest.display().to_string())
+                            );
+                        }
+                    }
                     KeyCode::Char('x') => {
                         let jobs = app.queue.jobs();
                         if let Some(j) = jobs.get(app.selected) {
@@ -533,7 +554,7 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     let help = Paragraph::new(Line::from(Span::styled(
-        " a:add  p:pause  c:cancel  d:dir  x:remove  j/k:select  q:quit ",
+        " a:add  p:pause  c:cancel  d:dir  v:ventoy  x:remove  j/k:select  q:quit ",
         Style::default().fg(DIM),
     )));
     f.render_widget(help, chunks[5]);

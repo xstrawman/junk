@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn default_download_dir() -> PathBuf {
@@ -12,6 +13,82 @@ pub fn default_download_dir() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("Downloads")
     })
+}
+
+/// Detect mounted Ventoy volumes (same heuristic as junkydoc-sync).
+/// Looks under `/run/media`, `/media`, `/mnt` for labels/markers containing "ventoy".
+pub fn find_ventoy_mounts() -> Vec<PathBuf> {
+    let mut mounts = Vec::new();
+    let candidates = [
+        PathBuf::from("/run/media"),
+        PathBuf::from("/media"),
+        PathBuf::from("/mnt"),
+    ];
+
+    for root in candidates {
+        if !root.is_dir() {
+            continue;
+        }
+        if let Ok(users) = fs::read_dir(&root) {
+            for user in users.flatten() {
+                let user_path = user.path();
+                if !user_path.is_dir() {
+                    continue;
+                }
+                if let Ok(entries) = fs::read_dir(&user_path) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() && looks_like_ventoy(&p) {
+                            mounts.push(p);
+                        }
+                    }
+                }
+                if looks_like_ventoy(&user_path) {
+                    mounts.push(user_path);
+                }
+            }
+        }
+    }
+
+    mounts.sort();
+    mounts.dedup();
+    mounts
+}
+
+fn looks_like_ventoy(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.contains("ventoy") {
+        return true;
+    }
+    path.join("ventoy").is_dir()
+        || path.join("Ventoy").is_dir()
+        || path.join("ventoy.json").is_file()
+}
+
+/// Distrohopper wisdom. Rotates on a cheap hash of the path/url so it feels intentional.
+pub fn distrohopper_line(context: &str) -> &'static str {
+    const LINES: &[&str] = &[
+        "distrohopper mode: mainline ISO → Ventoy. identity is a temporary filesystem.",
+        "another ISO for the stick of infinite reboots. the hopper never settles.",
+        "downloading directly to Ventoy — skipping the 'save to Downloads then forget' epoch.",
+        "tip: your current distro has 48 hours to impress you.",
+        "Ventoy doesn't judge. it just accumulates your personality disorders as .iso files.",
+        "mainline only? bold of you to pretend you won't also grab a GNOME rebuild at 3am.",
+        "one stick to hop them all. eject when the rice gets cold.",
+        "ISO landing on Ventoy. tomorrow's you can argue with today's you in the boot menu.",
+        "multi-conn into Ventoy: the only commitment issues that improve your uptime.",
+        "welcome back. the stick remembers every distro you swore was 'the one'.",
+    ];
+    let mut h: u32 = 2166136261;
+    for b in context.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(16777619);
+    }
+    LINES[(h as usize) % LINES.len()]
 }
 
 pub fn filename_from_url(url: &str) -> String {
