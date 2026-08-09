@@ -18,12 +18,33 @@ junk ventoy https://…/fedora.iso   # same idea, subcommand form
 In the TUI, press **`v`** to lock the download dir onto a detected Ventoy mount.
 (Identity is a temporary filesystem.)
 
+## Install with [Soar](https://soar.qaidvoid.dev)
+
+Soar is a rootless package manager for portable Linux binaries.
+
+```bash
+# install soar itself
+curl -fsSL https://soar.qaidvoid.dev/install.sh | sh
+export PATH="$HOME/.local/share/soar/bin:$PATH"
+
+# install junk from a GitHub Release (x86_64 musl)
+soar add --name junk --pkg-type static \
+  https://github.com/xstrawman/junk/releases/download/v0.1.0/junk-x86_64-unknown-linux-musl
+```
+
+Package definition for [soarpkgs](https://github.com/pkgforge/soarpkgs):  
+`packaging/soar/packages/junk/pkg.toml` — see `packaging/soar/README.md`.
+
 ## Build
 
 ```bash
 cd ~/Projects/apps/junk
 cargo build --release
 cp target/release/junk ~/bin/junk
+
+# portable musl binary (for Soar / releases)
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl -p junk
 ```
 
 ## CLI

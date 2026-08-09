@@ -1,0 +1,138 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl tools (native)
+        if: ${{ !matrix.use_cross }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: ${{ matrix.use_cross }}
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (native musl)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p junk
+
+      - name: Build (cross)
+        if: ${{ matrix.use_cross }}
+        run: cross build --release --target ${{ matrix.target }} -p junk
+
+      - name: Stage binary
+        run: |
+          BIN="target/${{ matrix.target }}/release/junk"
+          OUT="junk-${{ matrix.target }}"
+          cp "$BIN" "$OUT"
+          chmod +x "$OUT"
+          strip "$OUT" 2>/dev/null || true
+          ls -lh "$OUT"
+          file "$OUT" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: junk-${{ matrix.target }}
+          path: junk-${{ matrix.target }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la dist/
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: junk ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            dist/junk-x86_64-unknown-linux-musl
+            dist/junk-aarch64-unknown-linux-musl
+          body: |
+            ## junk ${{ steps.tag.outputs.name }}
+
+            Multi-connection HTTP(S) downloader — CLI + neon arcade TUI.
+
+            ### Install with [Soar](https://soar.qaidvoid.dev)
+
+            ```bash
+            curl -fsSL https://soar.qaidvoid.dev/install.sh | sh
+            export PATH="$HOME/.local/share/soar/bin:$PATH"
+
+            # x86_64
+            soar add --name junk --pkg-type static \
+              https://github.com/xstrawman/junk/releases/download/${{ steps.tag.outputs.name }}/junk-x86_64-unknown-linux-musl
+            ```
+
+            ### Manual
+
+            ```bash
+            curl -fL -o junk \
+              https://github.com/xstrawman/junk/releases/download/${{ steps.tag.outputs.name }}/junk-x86_64-unknown-linux-musl
+            chmod +x junk && install -Dm755 junk ~/.local/bin/junk
+            ```
+
+            ### Distrohopper
+
+            ```bash
+            junk --ventoy https://example.com/mainline.iso
+            ```
