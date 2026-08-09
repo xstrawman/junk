@@ -1,12 +1,17 @@
 //! Arcade TUI front-end for junk-core.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
+use crossterm::execute;
 use junk_core::{
     distrohopper_line, download_url, find_ventoy_mounts, human_bytes, DownloadOptions,
     DownloadQueue, JobStatus, Phase, ProgressEvent,
@@ -27,7 +32,10 @@ pub async fn run(dir: PathBuf, connections: u32) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
 
     let mut terminal = ratatui::init();
+    // Terminal paste (Shift+Ctrl+V / middle-click) arrives as Event::Paste
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
     let res = run_app(&mut terminal, dir, connections).await;
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     res
 }
@@ -47,7 +55,6 @@ struct App {
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     rx: Option<mpsc::Receiver<ProgressEvent>>,
-    // join handle for download task — we use channel only
     download_done: Option<tokio::sync::oneshot::Receiver<Result<PathBuf, String>>>,
     dir_prompt: bool,
 }
@@ -58,7 +65,10 @@ impl App {
             queue: DownloadQueue::new(dir.clone(), connections),
             input: String::new(),
             input_mode: false,
-            status: format!("JUNK ARCADE — drop a URL  ·  dir {}", dir.display()),
+            status: format!(
+                "JUNK ARCADE — press a (auto-pastes clipboard)  ·  dir {}",
+                dir.display()
+            ),
             error: None,
             success_flash: false,
             selected: 0,
@@ -71,6 +81,71 @@ impl App {
             rx: None,
             download_done: None,
             dir_prompt: false,
+        }
+    }
+
+    /// Open URL entry and deposit clipboard contents (first line, trimmed).
+    fn start_add_from_clipboard(&mut self) {
+        self.input_mode = true;
+        self.dir_prompt = false;
+        self.error = None;
+        match clipboard_text() {
+            Some(text) => {
+                let line = normalize_paste(&text);
+                if line.is_empty() {
+                    self.input.clear();
+                    self.status = "URL> (clipboard empty — type or paste)".into();
+                } else {
+                    self.input = line;
+                    self.status = format!(
+                        "clipboard loaded — Enter to queue  ({})",
+                        truncate_display(&self.input, 48)
+                    );
+                }
+            }
+            None => {
+                self.input.clear();
+                self.status =
+                    "URL> (no clipboard — type, or paste with Ctrl+Shift+V / Ctrl+V)".into();
+            }
+        }
+    }
+
+    fn apply_paste(&mut self, text: &str) {
+        let line = normalize_paste(text);
+        if line.is_empty() {
+            return;
+        }
+        if self.dir_prompt {
+            self.input.push_str(&line);
+            return;
+        }
+        // Paste anywhere → URL field
+        self.input_mode = true;
+        self.input.push_str(&line);
+        self.status = format!(
+            "pasted — Enter to queue  ({})",
+            truncate_display(&self.input, 48)
+        );
+    }
+
+    fn paste_clipboard_into_input(&mut self) {
+        if let Some(text) = clipboard_text() {
+            let line = normalize_paste(&text);
+            if !line.is_empty() {
+                // Replace field when empty; append if user already typed
+                if self.input.is_empty() {
+                    self.input = line;
+                } else {
+                    self.input.push_str(&line);
+                }
+                self.status = format!(
+                    "clipboard → field  ({})",
+                    truncate_display(&self.input, 48)
+                );
+            }
+        } else {
+            self.error = Some("clipboard unavailable (try terminal paste)".into());
         }
     }
 
@@ -104,7 +179,6 @@ impl App {
             .cloned();
         let Some(job) = job else { return };
 
-        // mark running in queue
         if let Some(j) = self
             .queue
             .jobs_mut()
@@ -138,7 +212,7 @@ impl App {
 
         tokio::spawn(async move {
             let res = download_url(&url, &dest, opts, tx).await;
-            let _ = done_tx.send(res.map_err(|e| e.to_string()).map(|p| p));
+            let _ = done_tx.send(res.map_err(|e| e.to_string()));
         });
     }
 
@@ -221,6 +295,55 @@ impl App {
     }
 }
 
+/// First non-empty line, trimmed. Strips surrounding quotes often added by copy.
+fn normalize_paste(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>')
+        .trim()
+        .to_string();
+    line
+}
+
+fn truncate_display(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    }
+}
+
+/// System clipboard: arboard, then wl-paste / xclip / xsel fallbacks.
+fn clipboard_text() -> Option<String> {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        if let Ok(t) = cb.get_text() {
+            let t = t.trim().to_string();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+    }
+    for cmd in [
+        &["wl-paste", "-n"][..],
+        &["xclip", "-selection", "clipboard", "-o"][..],
+        &["xsel", "--clipboard", "--output"][..],
+    ] {
+        if let Ok(out) = Command::new(cmd[0]).args(&cmd[1..]).output() {
+            if out.status.success() {
+                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !t.is_empty() {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32) -> Result<()> {
     let mut app = App::new(dir, connections);
     let tick = Duration::from_millis(33);
@@ -235,13 +358,35 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
         app.anim_t += dt;
 
         terminal.draw(|f| ui(f, &app))?;
+        let _ = io::stdout().flush();
 
         let timeout = tick.saturating_sub(last.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+        if !event::poll(timeout)? {
+            continue;
+        }
+
+        match event::read()? {
+            // Bracketed paste from terminal
+            Event::Paste(text) => {
+                app.apply_paste(&text);
+            }
+            Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+
+                // Ctrl+V / Ctrl+Shift+V → clipboard into field
+                if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    if !app.input_mode && !app.dir_prompt {
+                        app.start_add_from_clipboard();
+                    } else {
+                        app.paste_clipboard_into_input();
+                    }
+                    continue;
+                }
+
                 if app.dir_prompt {
                     match key.code {
                         KeyCode::Esc => {
@@ -266,12 +411,18 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                     }
                     continue;
                 }
+
                 if app.input_mode {
                     match key.code {
                         KeyCode::Esc => {
                             app.input_mode = false;
+                            app.input.clear();
+                            app.status = "cancelled add".into();
                         }
                         KeyCode::Enter => app.add_url(),
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.input.clear();
+                        }
                         KeyCode::Char(c) => app.input.push(c),
                         KeyCode::Backspace => {
                             app.input.pop();
@@ -280,12 +431,12 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                     }
                     continue;
                 }
+
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         if app.downloading {
                             app.cancel.store(true, Ordering::Relaxed);
                             app.status = "cancelling… (q again to force quit)".into();
-                            // second q quits
                             if event::poll(Duration::from_millis(400))? {
                                 if let Event::Key(k2) = event::read()? {
                                     if matches!(k2.code, KeyCode::Char('q') | KeyCode::Esc) {
@@ -300,9 +451,9 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         break;
                     }
-                    KeyCode::Char('a') => {
-                        app.input_mode = true;
-                        app.input.clear();
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        // Auto-deposit clipboard into URL field
+                        app.start_add_from_clipboard();
                     }
                     KeyCode::Char('p') => {
                         if app.pause.load(Ordering::Relaxed) {
@@ -324,7 +475,6 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                         app.input = app.queue.dir().display().to_string();
                     }
                     KeyCode::Char('v') => {
-                        // Distrohopper: jump dest to Ventoy
                         let mounts = find_ventoy_mounts();
                         if mounts.is_empty() {
                             app.error = Some(
@@ -367,6 +517,7 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
                     _ => {}
                 }
             }
+            _ => {}
         }
     }
     Ok(())
@@ -374,10 +525,7 @@ async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32)
 
 fn ui(f: &mut Frame, app: &App) {
     let area = f.area();
-    f.render_widget(
-        Block::default().style(Style::default().bg(PAPER)),
-        area,
-    );
+    f.render_widget(Block::default().style(Style::default().bg(PAPER)), area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -391,13 +539,9 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    // Title
     let title = Paragraph::new(Line::from(vec![
         Span::styled(" ⚡ JUNK ", title_style()),
-        Span::styled(
-            " multi-conn arcade  ",
-            Style::default().fg(DIM),
-        ),
+        Span::styled(" multi-conn arcade  ", Style::default().fg(DIM)),
         Span::styled(
             "syringe → arm writes itself",
             Style::default().fg(NEON_CYAN),
@@ -410,7 +554,6 @@ fn ui(f: &mut Frame, app: &App) {
     );
     f.render_widget(title, chunks[0]);
 
-    // Stage: syringe | arm
     let stage = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -434,7 +577,6 @@ fn ui(f: &mut Frame, app: &App) {
     );
     f.render_widget(arm_w, stage[1]);
 
-    // Scoreboard
     let (rate, conn, eta, name) = if let Some(ev) = &app.last_ev {
         (
             ev.bytes_per_sec,
@@ -460,7 +602,6 @@ fn ui(f: &mut Frame, app: &App) {
     );
     f.render_widget(board, chunks[2]);
 
-    // Queue
     let items: Vec<ListItem> = app
         .queue
         .jobs()
@@ -514,16 +655,12 @@ fn ui(f: &mut Frame, app: &App) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(format!(
-                " QUEUE  (dir: {}) ",
-                app.queue.dir().display()
-            ))
+            .title(format!(" QUEUE  (dir: {}) ", app.queue.dir().display()))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(DIM)),
     );
     f.render_widget(list, chunks[3]);
 
-    // Input / status
     let prompt = if app.dir_prompt {
         format!("DIR> {}_", app.input)
     } else if app.input_mode {
@@ -548,13 +685,8 @@ fn ui(f: &mut Frame, app: &App) {
         .wrap(Wrap { trim: true });
     f.render_widget(status, chunks[4]);
 
-    if let Some(err) = &app.error {
-        // overlay hint
-        let _ = err;
-    }
-
     let help = Paragraph::new(Line::from(Span::styled(
-        " a:add  p:pause  c:cancel  d:dir  v:ventoy  x:remove  j/k:select  q:quit ",
+        " a:add+clipboard  Enter:queue  Ctrl+V:paste  p:pause  c:cancel  d:dir  v:ventoy  q:quit ",
         Style::default().fg(DIM),
     )));
     f.render_widget(help, chunks[5]);

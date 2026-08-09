@@ -76,7 +76,8 @@ junk -c 32 https://a/file1 https://b/file2
 
 | Key | Action |
 |-----|--------|
-| `a` | Add URL |
+| `a` | Add URL — **auto-fills from clipboard** (then Enter to queue) |
+| `Ctrl+V` | Paste clipboard into URL field |
 | `p` | Pause / resume |
 | `c` | Cancel active |
 | `d` | Change download dir |

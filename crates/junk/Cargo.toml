@@ -17,3 +17,4 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
+arboard = { workspace = true }
