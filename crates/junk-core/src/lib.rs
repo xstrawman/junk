@@ -1,16 +1,23 @@
-//! Multi-connection HTTP(S) download engine (aria2-style ranged GETs).
+//! Multi-connection HTTP(S) download engine (aria2-style ranged GETs)
+//! + stream pipeline (yt-dlp resolve → multi-conn → ffmpeg), ytdl-inspired.
 
 mod download;
+mod media;
 mod progress;
 mod resume;
 mod util;
 
 pub use download::{download_url, DownloadOptions};
+pub use media::{
+    default_music_dir, default_video_dir, download_media, find_ffmpeg, find_yt_dlp,
+    looks_like_stream_host, should_use_media, MediaMode, DEFAULT_QUALITY,
+};
 pub use progress::{Phase, ProgressEvent};
 pub use util::{
     default_download_dir, distrohopper_line, find_ventoy_mounts, format_eta, human_bytes,
     human_rate, sanitize_filename,
 };
+
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

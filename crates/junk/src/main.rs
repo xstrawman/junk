@@ -1,9 +1,13 @@
-//! junk — multi-connection HTTP(S) downloader + arcade TUI
+//! junk — one product: hypersonic multi-conn + streams (aria2 × ytdl × ffmpeg).
+//!
+//! CLI (default): ASCII art progress, clipboard-first.
+//! TUI (`junk tui`): full arcade UI — especially nice on Mac Terminal/iTerm.
 
 mod arcade;
+mod ascii;
+mod clipboard;
 mod tui_app;
 
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,52 +15,78 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use junk_core::{
-    default_download_dir, distrohopper_line, download_url, find_ventoy_mounts, format_eta,
-    human_bytes, human_rate, DownloadOptions, DownloadQueue, JobStatus, Phase, ProgressEvent,
+    default_download_dir, default_music_dir, default_video_dir, download_media, download_url,
+    find_ffmpeg, find_ventoy_mounts, find_yt_dlp, human_bytes, should_use_media, DownloadOptions,
+    MediaMode, Phase, ProgressEvent, DEFAULT_QUALITY,
 };
 use tokio::sync::mpsc;
+
+use crate::ascii::{banner, ok, print_syringe, progress_line, stage, warn};
+use crate::clipboard::{clipboard_url, looks_like_url, normalize_paste};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "junk",
-    about = "Super-fast multi-connection HTTP(S) downloader — CLI + arcade syringe TUI",
-    long_about = "Multi-conn HTTP(S) downloader with neon arcade TUI.\n\n\
-Distrohopper special: send a mainline ISO straight to your Ventoy stick:\n  \
-  junk --ventoy https://…/ubuntu.iso\n  \
-  junk ventoy https://…/archlinux.iso\n\n\
-Identity is a temporary filesystem. The stick remembers.",
+    about = "Hypersonic downloads: multi-conn HTTP + streaming video (yt-dlp × ffmpeg)",
+    long_about = "junk = aria2-style multi-conn × ytdl streams × ffmpeg merge.\n\n\
+  junk                     # clipboard URL → download (ASCII progress)\n\
+  junk <url>               # direct / stream auto-detect\n\
+  junk --audio <url>       # MP3 (ytdl-audio style → ~/Music)\n\
+  junk --ventoy <iso-url>  # distrohopper: ISO → Ventoy\n\
+  junk tui                 # arcade TUI (great on Mac)\n",
     version
 )]
 struct Cli {
-    /// Download directory (default: XDG_DOWNLOAD_DIR or ~/Downloads)
+    /// Download directory (files). Streams default to ~/Videos or ~/Music.
     #[arg(short = 'd', long = "dir", global = true)]
     dir: Option<PathBuf>,
 
-    /// Download straight to a detected Ventoy mount (distrohopper mode)
-    /// (use long flag only — short `-V` is reserved for --version)
+    /// Download straight to a detected Ventoy mount
     #[arg(long = "ventoy", global = true)]
     ventoy: bool,
 
-    /// Parallel connections per file (1–32, default 16)
+    /// Parallel connections (1–32, default 16)
     #[arg(short = 'c', long = "connections", default_value_t = 16, global = true)]
     connections: u32,
+
+    /// Max video height for streams (default 720, like ytdl)
+    #[arg(short = 'q', long = "quality", default_value_t = DEFAULT_QUALITY)]
+    quality: u32,
+
+    /// Force audio extract → mp3 in ~/Music
+    #[arg(long = "audio", global = true)]
+    audio: bool,
+
+    /// Force media pipeline (yt-dlp) even if host looks like a raw file
+    #[arg(long = "stream", global = true)]
+    stream: bool,
+
+    /// Force plain HTTP multi-conn (skip yt-dlp)
+    #[arg(long = "http", global = true)]
+    http_only: bool,
+
+    /// Do not auto-read clipboard when no URL given
+    #[arg(long = "no-clipboard", global = true)]
+    no_clipboard: bool,
+
+    /// Skip the ASCII banner
+    #[arg(long = "plain", global = true)]
+    plain: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// URLs to download (CLI mode when provided without subcommand)
+    /// URLs (optional — clipboard used when empty)
     #[arg(trailing_var_arg = true, allow_hyphen_values = false)]
     urls: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Launch the retro arcade TUI
+    /// Arcade TUI (recommended on Mac Terminal / iTerm)
     Tui,
-    /// Distrohopper mode: multi-conn ISO(s) straight onto Ventoy
-    #[command(about = "Mainline ISO → Ventoy. The stick of infinite reboots.")]
+    /// Distrohopper: multi-conn ISO(s) onto Ventoy
     Ventoy {
-        /// ISO (or any file) URLs
         urls: Vec<String>,
     },
 }
@@ -68,94 +98,153 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Tui) => {
-            let dir = resolve_dir(cli.dir, cli.ventoy)?;
+            let dir = resolve_file_dir(cli.dir, cli.ventoy)?;
+            // TUI shares engine; Mac users land here happily
             tui_app::run(dir, connections).await?;
         }
         Some(Commands::Ventoy { urls }) => {
+            let urls = resolve_urls(urls, cli.no_clipboard)?;
             if urls.is_empty() {
-                bail!(
-                    "ventoy mode needs a URL.\n\
-                     example: junk ventoy https://mirror.example/ubuntu.iso\n\
-                     \n{}",
-                    distrohopper_line("usage")
-                );
+                bail!("ventoy mode needs a URL (arg or clipboard)");
             }
-            let dir = resolve_ventoy(None)?;
-            print_hopper_banner(&dir, &urls);
-            run_cli(dir, connections, urls).await?;
-        }
-        None if cli.urls.is_empty() => {
-            let dir = resolve_dir(cli.dir, cli.ventoy)?;
-            tui_app::run(dir, connections).await?;
+            let dir = resolve_ventoy()?;
+            if !cli.plain {
+                banner();
+            }
+            stage(&format!("VENTOY ← {}", dir.display()));
+            run_jobs(
+                urls,
+                dir,
+                connections,
+                cli.quality,
+                false,
+                true, // http only for ISOs
+                false,
+                cli.plain,
+            )
+            .await?;
         }
         None => {
-            let dir = resolve_dir(cli.dir, cli.ventoy)?;
-            if cli.ventoy {
-                print_hopper_banner(&dir, &cli.urls);
+            let urls = resolve_urls(cli.urls, cli.no_clipboard)?;
+            if urls.is_empty() {
+                if !cli.plain {
+                    banner();
+                }
+                eprintln!("  No URL in args or clipboard.");
+                eprintln!("  Copy a link, then:  junk");
+                eprintln!("  Or:  junk <url>   ·   junk tui   ·   junk --audio <url>");
+                eprintln!();
+                // On macOS, nudge toward TUI
+                if cfg!(target_os = "macos") {
+                    eprintln!("  Mac tip:  junk tui  — arcade UI with auto-clipboard on [a]");
+                }
+                std::process::exit(2);
             }
-            run_cli(dir, connections, cli.urls).await?;
+
+            if !cli.plain {
+                banner();
+            }
+
+            // Classify first URL for default dir
+            let media = should_use_media(&urls[0], cli.stream || cli.audio, cli.http_only);
+            let dir = if cli.ventoy {
+                resolve_ventoy()?
+            } else if let Some(d) = cli.dir {
+                d
+            } else if cli.audio {
+                default_music_dir()
+            } else if media {
+                default_video_dir()
+            } else {
+                default_download_dir()
+            };
+
+            stage(&format!("dest {}", dir.display()));
+            if find_yt_dlp().is_some() {
+                stage("yt-dlp ready");
+            } else {
+                warn("yt-dlp not found — streaming sites need it (pacman/brew install yt-dlp)");
+            }
+            if find_ffmpeg().is_some() {
+                stage("ffmpeg ready");
+            } else {
+                warn("ffmpeg not found — needed to merge video+audio");
+            }
+            eprintln!();
+
+            run_jobs(
+                urls,
+                dir,
+                connections,
+                cli.quality,
+                cli.audio,
+                cli.http_only,
+                cli.stream,
+                cli.plain,
+            )
+            .await?;
         }
     }
     Ok(())
 }
 
-fn resolve_dir(dir: Option<PathBuf>, ventoy: bool) -> Result<PathBuf> {
-    if let Some(d) = dir {
-        if ventoy {
-            eprintln!(
-                "note: --dir wins over --ventoy ({})",
-                d.display()
-            );
+fn resolve_urls(mut urls: Vec<String>, no_clipboard: bool) -> Result<Vec<String>> {
+    urls.retain(|u| !u.trim().is_empty());
+    if urls.is_empty() && !no_clipboard {
+        if let Some(u) = clipboard_url() {
+            stage(&format!("clipboard → {u}"));
+            urls.push(u);
         }
+    }
+    // normalize
+    let urls: Vec<String> = urls
+        .into_iter()
+        .map(|u| {
+            let n = normalize_paste(&u);
+            if n.starts_with("www.") {
+                format!("https://{n}")
+            } else {
+                n
+            }
+        })
+        .filter(|u| looks_like_url(u))
+        .collect();
+    Ok(urls)
+}
+
+fn resolve_file_dir(dir: Option<PathBuf>, ventoy: bool) -> Result<PathBuf> {
+    if let Some(d) = dir {
         return Ok(d);
     }
     if ventoy {
-        return resolve_ventoy(None);
+        return resolve_ventoy();
     }
     Ok(default_download_dir())
 }
 
-fn resolve_ventoy(prefer: Option<usize>) -> Result<PathBuf> {
+fn resolve_ventoy() -> Result<PathBuf> {
     let mounts = find_ventoy_mounts();
     if mounts.is_empty() {
-        bail!(
-            "no Ventoy mount found under /run/media, /media, or /mnt.\n\
-             plug in the stick, mount it, try again.\n\
-             (or: junk -d /path/to/mount <url>)\n\
-             \n{}",
-            distrohopper_line("no-ventoy")
-        );
+        bail!("no Ventoy mount found under /run/media, /media, /mnt");
     }
-    let idx = prefer.unwrap_or(0).min(mounts.len() - 1);
     if mounts.len() > 1 {
-        eprintln!("found {} Ventoy mount(s):", mounts.len());
-        for (i, m) in mounts.iter().enumerate() {
-            let mark = if i == idx { "→" } else { " " };
-            eprintln!("  {mark} [{i}] {}", m.display());
-        }
-        eprintln!("using [{}] (set -d PATH to pick another)", idx);
+        eprintln!("  found {} Ventoy mounts, using {}", mounts.len(), mounts[0].display());
     }
-    Ok(mounts[idx].clone())
+    Ok(mounts[0].clone())
 }
 
-fn print_hopper_banner(dir: &std::path::Path, urls: &[String]) {
-    let ctx = format!("{}{}", dir.display(), urls.first().map(|s| s.as_str()).unwrap_or(""));
-    eprintln!("╔══════════════════════════════════════════════════════════╗");
-    eprintln!("║  JUNK · DISTROHOPPER EXPRESS · mainline ISO → VENTOY    ║");
-    eprintln!("╚══════════════════════════════════════════════════════════╝");
-    eprintln!("  dest: {}", dir.display());
-    eprintln!("  {}", distrohopper_line(&ctx));
-    eprintln!();
-}
-
-async fn run_cli(dir: PathBuf, connections: u32, urls: Vec<String>) -> Result<()> {
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("create download dir {}", dir.display()))?;
-
-    let mut queue = DownloadQueue::new(dir.clone(), connections);
-    for u in &urls {
-        queue.enqueue(u).with_context(|| format!("enqueue {u}"))?;
-    }
+#[allow(clippy::too_many_arguments)]
+async fn run_jobs(
+    urls: Vec<String>,
+    dir: PathBuf,
+    connections: u32,
+    quality: u32,
+    audio: bool,
+    http_only: bool,
+    force_stream: bool,
+    plain: bool,
+) -> Result<()> {
+    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -163,104 +252,116 @@ async fn run_cli(dir: PathBuf, connections: u32, urls: Vec<String>) -> Result<()
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
             c.store(true, Ordering::Relaxed);
+            eprintln!("\n  cancel requested…");
         });
     }
 
-    let tty = std::env::var_os("TERM").is_some() && std::env::var_os("CI").is_none();
     let mut any_fail = false;
-
-    while let Some(job_id) = queue
-        .jobs()
-        .iter()
-        .find(|j| j.status == JobStatus::Queued)
-        .map(|j| j.id)
-    {
+    for (i, url) in urls.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             any_fail = true;
             break;
         }
+        let job_id = (i + 1) as u64;
+        eprintln!("  ── job {job_id}/{} ──", urls.len());
+        stage(url);
 
-        let (url, dest) = {
-            let j = queue
-                .jobs_mut()
-                .iter_mut()
-                .find(|j| j.id == job_id)
-                .expect("job");
-            j.status = JobStatus::Running;
-            (j.url.clone(), j.dest_path.clone())
-        };
+        let use_media = should_use_media(url, force_stream || audio, http_only);
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(128);
 
-        let job_cancel = Arc::new(AtomicBool::new(false));
-        let job_cancel_w = Arc::clone(&job_cancel);
-        let global = Arc::clone(&cancel);
-        let watch = tokio::spawn(async move {
-            while !global.load(Ordering::Relaxed) && !job_cancel_w.load(Ordering::Relaxed) {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            if global.load(Ordering::Relaxed) {
-                job_cancel_w.store(true, Ordering::Relaxed);
+        let cancel_j = Arc::clone(&cancel);
+        let dir_c = dir.clone();
+        let url_c = url.clone();
+
+        let mut work = tokio::spawn(async move {
+            if use_media {
+                let mode = if audio {
+                    MediaMode::Audio
+                } else {
+                    MediaMode::Video {
+                        max_height: quality,
+                    }
+                };
+                download_media(
+                    &url_c,
+                    mode,
+                    &dir_c,
+                    connections,
+                    cancel_j,
+                    tx,
+                    job_id,
+                )
+                .await
+            } else {
+                let name = junk_core::sanitize_filename(
+                    url_c
+                        .split('/')
+                        .next_back()
+                        .unwrap_or("download.bin"),
+                );
+                // strip query
+                let name = name.split('?').next().unwrap_or(&name).to_string();
+                let dest = dir_c.join(if name.is_empty() {
+                    "download.bin".into()
+                } else {
+                    name
+                });
+                let opts = DownloadOptions {
+                    connections,
+                    cancel: cancel_j,
+                    pause: Arc::new(AtomicBool::new(false)),
+                    job_id,
+                };
+                download_url(&url_c, &dest, opts, tx).await
             }
         });
 
-        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(128);
-        let opts = DownloadOptions {
-            connections,
-            cancel: Arc::clone(&job_cancel),
-            pause: Arc::new(AtomicBool::new(false)),
-            job_id,
-        };
-
-        let mut download = tokio::spawn(async move { download_url(&url, &dest, opts, tx).await });
-
-        let mut last_line_len = 0usize;
+        let mut last_pct_bucket = 0u32;
         loop {
             tokio::select! {
                 ev = rx.recv() => {
                     if let Some(ev) = ev {
-                        if let Some(j) = queue.jobs_mut().iter_mut().find(|j| j.id == job_id) {
-                            j.bytes_done = ev.bytes_done;
-                            j.bytes_total = ev.bytes_total;
-                            j.bytes_per_sec = ev.bytes_per_sec;
-                            j.connections_active = ev.connections_active;
+                        if !plain {
+                            progress_line(&ev);
+                            if ev.bytes_total > 0 {
+                                let pct = (100.0 * ev.bytes_done as f64 / ev.bytes_total as f64) as u32;
+                                let bucket = pct / 20;
+                                if bucket > last_pct_bucket && bucket <= 5 {
+                                    last_pct_bucket = bucket;
+                                    eprintln!();
+                                    print_syringe(pct as f32 / 100.0);
+                                }
+                            }
+                        } else if matches!(ev.phase, Phase::Done | Phase::Error) {
+                            eprintln!(
+                                "[{:?}] {} {}/{}",
+                                ev.phase,
+                                ev.filename,
+                                human_bytes(ev.bytes_done),
+                                human_bytes(ev.bytes_total)
+                            );
                         }
-                        print_progress(&ev, tty, &mut last_line_len);
                     }
                 }
-                res = &mut download => {
+                res = &mut work => {
                     while let Ok(ev) = rx.try_recv() {
-                        print_progress(&ev, tty, &mut last_line_len);
+                        if !plain {
+                            progress_line(&ev);
+                        }
                     }
-                    if tty {
-                        eprintln!();
-                    }
-                    job_cancel.store(true, Ordering::Relaxed);
-                    let _ = watch.abort();
                     match res {
                         Ok(Ok(path)) => {
-                            if let Some(j) = queue.jobs_mut().iter_mut().find(|j| j.id == job_id) {
-                                j.status = JobStatus::Done;
-                                j.dest_path = path;
+                            if !plain {
+                                print_syringe(1.0);
                             }
+                            ok(&format!("{}", path.display()));
                         }
                         Ok(Err(e)) => {
-                            let msg = e.to_string();
-                            let cancelled = matches!(e, junk_core::JunkError::Cancelled);
-                            if let Some(j) = queue.jobs_mut().iter_mut().find(|j| j.id == job_id) {
-                                j.status = if cancelled {
-                                    JobStatus::Cancelled
-                                } else {
-                                    JobStatus::Failed
-                                };
-                                j.error = Some(msg.clone());
-                            }
-                            eprintln!("error: {msg}");
+                            eprintln!("  ✗ {e}");
                             any_fail = true;
-                            if cancelled {
-                                break;
-                            }
                         }
                         Err(e) => {
-                            eprintln!("error: {e}");
+                            eprintln!("  ✗ task: {e}");
                             any_fail = true;
                         }
                     }
@@ -268,25 +369,7 @@ async fn run_cli(dir: PathBuf, connections: u32, urls: Vec<String>) -> Result<()
                 }
             }
         }
-
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-    }
-
-    for j in queue.jobs() {
-        let st = match j.status {
-            JobStatus::Done => "done",
-            JobStatus::Failed => "FAIL",
-            JobStatus::Cancelled => "cancelled",
-            JobStatus::Queued => "queued",
-            JobStatus::Running => "running",
-            JobStatus::Paused => "paused",
-        };
-        eprintln!("  [{st}] {} → {}", j.url, j.dest_path.display());
-        if let Some(err) = &j.error {
-            eprintln!("         {err}");
-        }
+        eprintln!();
     }
 
     if any_fail {
@@ -295,38 +378,3 @@ async fn run_cli(dir: PathBuf, connections: u32, urls: Vec<String>) -> Result<()
     Ok(())
 }
 
-fn print_progress(ev: &ProgressEvent, tty: bool, last_len: &mut usize) {
-    let pct = if ev.bytes_total > 0 {
-        100.0 * ev.bytes_done as f64 / ev.bytes_total as f64
-    } else {
-        0.0
-    };
-    let line = format!(
-        "[{:>5.1}%] {} / {}  {}  conn={}  eta={}  {}  ({:?})",
-        pct,
-        human_bytes(ev.bytes_done),
-        if ev.bytes_total > 0 {
-            human_bytes(ev.bytes_total)
-        } else {
-            "?".into()
-        },
-        human_rate(ev.bytes_per_sec),
-        ev.connections_active,
-        format_eta(ev.eta_secs),
-        ev.filename,
-        ev.phase,
-    );
-
-    if tty {
-        let pad = if line.len() < *last_len {
-            " ".repeat(*last_len - line.len())
-        } else {
-            String::new()
-        };
-        eprint!("\r{line}{pad}");
-        let _ = io::stderr().flush();
-        *last_len = line.len();
-    } else if matches!(ev.phase, Phase::Done | Phase::Error | Phase::Finalizing) {
-        eprintln!("{line}");
-    }
-}

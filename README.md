@@ -1,110 +1,85 @@
 # junk
 
-Super-fast **multi-connection HTTP(S)** downloader (Rust, aria2-style ranges) with a
-**retro arcade TUI** — a giant ASCII syringe loads a junkie’s arm as the download fills.
+**One product.** Hypersonic downloads:
+
+- **aria2-style** multi-connection HTTP(S)
+- **ytdl-style** streaming (yt-dlp resolve → multi-conn streams → **ffmpeg** merge)
+- **Clipboard-first** CLI with cool ASCII art
+- **Arcade TUI** still available (especially nice on **Mac** Terminal / iTerm)
 
 ```
-junk <url>              # CLI, multi-conn
-junk                    # arcade TUI
-junk tui                # same
-junk -d ~/Downloads -c 16 <url>
-
-# Distrohopper express — mainline ISO straight to Ventoy
-junk --ventoy https://…/ubuntu.iso
-junk ventoy https://…/archlinux.iso
-junk ventoy https://…/fedora.iso   # same idea, subcommand form
+  junk                         # grab URL from clipboard → go
+  junk <url>                   # file or stream (auto-detect)
+  junk --audio <url>           # MP3 → ~/Music  (ytdl-audio style)
+  junk -q 1080 <youtube-url>   # max height 1080p
+  junk --ventoy <iso-url>      # distrohopper ISO → Ventoy
+  junk tui                     # full arcade TUI (Mac-friendly)
 ```
 
-In the TUI, press **`v`** to lock the download dir onto a detected Ventoy mount.
-(Identity is a temporary filesystem.)
+## How it decides
 
-## Install with [Soar](https://soar.qaidvoid.dev)
+| Link type | What happens |
+|-----------|----------------|
+| YouTube / Vimeo / TikTok / … | yt-dlp gets stream URLs → **junk multi-conn** pulls them → ffmpeg merges (like your `ytdl`) |
+| Direct ISO / zip / file | Pure multi-conn ranged GET |
+| `--audio` | yt-dlp extract → mp3 in `~/Music` |
+| `--http` | Force plain multi-conn (no yt-dlp) |
+| `--stream` | Force media pipeline |
 
-Soar is a rootless package manager for portable Linux binaries.
+Needs **yt-dlp** + **ffmpeg** on `PATH` for streaming sites.
+
+## CLI (default)
+
+ASCII banner + syringe progress. No separate “product” — just run `junk`.
 
 ```bash
-# install soar itself
-curl -fsSL https://soar.qaidvoid.dev/install.sh | sh
-export PATH="$HOME/.local/share/soar/bin:$PATH"
+# copy a YouTube link, then:
+junk
 
-# install junk from a GitHub Release (x86_64 musl)
-soar add --name junk --pkg-type static \
-  https://github.com/xstrawman/junk/releases/download/v0.1.0/junk-x86_64-unknown-linux-musl
+# or paste explicitly
+junk 'https://www.youtube.com/watch?v=…'
+junk 'https://example.com/big.iso'
 ```
 
-Package definition for [soarpkgs](https://github.com/pkgforge/soarpkgs):  
-`packaging/soar/packages/junk/pkg.toml` — see `packaging/soar/README.md`.
+## TUI (Mac & desktop terminals)
 
-## Install with Homebrew
+```bash
+junk tui
+```
+
+- **`a`** — load clipboard into URL field  
+- **Enter** — queue  
+- Streams auto-route to `~/Videos`  
+- Same engine as CLI  
+
+## Install
+
+### From source
+
+```bash
+cargo build --release -p junk
+cp target/release/junk ~/bin/junk   # or ~/.local/bin
+```
+
+### Homebrew
 
 ```bash
 brew tap xstrawman/junk https://github.com/xstrawman/junk
 brew install junk
+# also: brew install yt-dlp ffmpeg
 ```
 
-Latest git:
+### Soar / Flatpak
 
-```bash
-brew install --HEAD xstrawman/junk/junk
-```
-
-Details: `packaging/homebrew/README.md` · formula: `Formula/junk.rb`
-
-## Install with Flatpak
-
-```bash
-flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-cd ~/Projects/apps/junk   # or clone the repo
-flatpak-builder --user --install --force-clean \
-  packaging/flatpak/build-dir \
-  packaging/flatpak/dev.xstrawman.Junk.yml
-
-flatpak run dev.xstrawman.Junk --ventoy https://example.com/distro.iso
-```
-
-Details: `packaging/flatpak/README.md`
-
-## Build
-
-```bash
-cd ~/Projects/apps/junk
-cargo build --release
-cp target/release/junk ~/bin/junk
-
-# portable musl binary (for Soar / releases)
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl -p junk
-```
-
-## CLI
-
-```bash
-junk https://example.com/big.iso
-junk -c 32 https://a/file1 https://b/file2
-```
-
-- Parallel ranged GETs (default **16** connections, `--connections` / `-c`)
-- Resume via `file.junk.part` + `file.junk.state.json`
-- Saves to `$XDG_DOWNLOAD_DIR` or `~/Downloads` (`--dir` / `-d`)
-
-## TUI keys
-
-| Key | Action |
-|-----|--------|
-| `a` | Add URL — **auto-fills from clipboard** (then Enter to queue) |
-| `Ctrl+V` | Paste clipboard into URL field |
-| `p` | Pause / resume |
-| `c` | Cancel active |
-| `d` | Change download dir |
-| `v` | **Ventoy** — dest = detected stick (distrohopper mode) |
-| `x` | Remove selected queued job |
-| `j` / `k` | Move selection |
-| `q` | Quit |
+See `packaging/soar/` and `packaging/flatpak/`.
 
 ## Layout
 
-- `crates/junk-core` — download engine
-- `crates/junk` — CLI + ratatui arcade UI
+| Crate / path | Role |
+|--------------|------|
+| `junk-core` | Multi-conn engine + media pipeline |
+| `junk` | CLI (ASCII) + TUI front-ends |
+| `Formula/junk.rb` | Homebrew |
 
 ## License
 

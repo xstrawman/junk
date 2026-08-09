@@ -2,7 +2,6 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,9 +12,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use junk_core::{
-    distrohopper_line, download_url, find_ventoy_mounts, human_bytes, DownloadOptions,
-    DownloadQueue, JobStatus, Phase, ProgressEvent,
+    default_video_dir, distrohopper_line, download_media, download_url, find_ventoy_mounts,
+    human_bytes, should_use_media, DownloadOptions, DownloadQueue, JobStatus, MediaMode,
+    Phase, ProgressEvent, DEFAULT_QUALITY,
 };
+use crate::clipboard::{clipboard_text, clipboard_url, normalize_paste};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -65,10 +66,12 @@ impl App {
             queue: DownloadQueue::new(dir.clone(), connections),
             input: String::new(),
             input_mode: false,
-            status: format!(
-                "JUNK ARCADE — press a (auto-pastes clipboard)  ·  dir {}",
-                dir.display()
-            ),
+            status: {
+                let clip = clipboard_url()
+                    .map(|u| format!("clipboard ready: {u}"))
+                    .unwrap_or_else(|| "press a (loads clipboard) · paste OK".into());
+                format!("JUNK ARCADE — {clip}  ·  dir {}", dir.display())
+            },
             error: None,
             success_flash: false,
             selected: 0,
@@ -120,7 +123,6 @@ impl App {
             self.input.push_str(&line);
             return;
         }
-        // Paste anywhere → URL field
         self.input_mode = true;
         self.input.push_str(&line);
         self.status = format!(
@@ -133,7 +135,6 @@ impl App {
         if let Some(text) = clipboard_text() {
             let line = normalize_paste(&text);
             if !line.is_empty() {
-                // Replace field when empty; append if user already typed
                 if self.input.is_empty() {
                     self.input = line;
                 } else {
@@ -154,9 +155,20 @@ impl App {
         if url.is_empty() {
             return;
         }
+        // Streams → Videos dir; raw files → queue dir
+        if should_use_media(&url, false, false) {
+            let vdir = default_video_dir();
+            let _ = std::fs::create_dir_all(&vdir);
+            self.queue.set_dir(vdir);
+        }
         match self.queue.enqueue(&url) {
             Ok(_) => {
-                self.status = format!("queued {url}");
+                let kind = if should_use_media(&url, false, false) {
+                    "stream"
+                } else {
+                    "file"
+                };
+                self.status = format!("queued [{kind}] {url}");
                 self.error = None;
                 self.input.clear();
                 self.input_mode = false;
@@ -203,15 +215,39 @@ impl App {
 
         let url = job.url.clone();
         let dest = job.dest_path.clone();
-        let opts = DownloadOptions {
-            connections: self.queue.connections(),
-            cancel: Arc::clone(&self.cancel),
-            pause: Arc::clone(&self.pause),
-            job_id: job.id,
-        };
+        let dest_dir = dest
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.queue.dir().clone());
+        let connections = self.queue.connections();
+        let cancel = Arc::clone(&self.cancel);
+        let pause = Arc::clone(&self.pause);
+        let job_id = job.id;
+        let use_media = should_use_media(&url, false, false);
 
         tokio::spawn(async move {
-            let res = download_url(&url, &dest, opts, tx).await;
+            let res = if use_media {
+                download_media(
+                    &url,
+                    MediaMode::Video {
+                        max_height: DEFAULT_QUALITY,
+                    },
+                    &dest_dir,
+                    connections,
+                    cancel,
+                    tx,
+                    job_id,
+                )
+                .await
+            } else {
+                let opts = DownloadOptions {
+                    connections,
+                    cancel,
+                    pause,
+                    job_id,
+                };
+                download_url(&url, &dest, opts, tx).await
+            };
             let _ = done_tx.send(res.map_err(|e| e.to_string()));
         });
     }
@@ -295,19 +331,6 @@ impl App {
     }
 }
 
-/// First non-empty line, trimmed. Strips surrounding quotes often added by copy.
-fn normalize_paste(text: &str) -> String {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("")
-        .trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>')
-        .trim()
-        .to_string();
-    line
-}
-
 fn truncate_display(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -315,33 +338,6 @@ fn truncate_display(s: &str, max: usize) -> String {
         let t: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{t}…")
     }
-}
-
-/// System clipboard: arboard, then wl-paste / xclip / xsel fallbacks.
-fn clipboard_text() -> Option<String> {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        if let Ok(t) = cb.get_text() {
-            let t = t.trim().to_string();
-            if !t.is_empty() {
-                return Some(t);
-            }
-        }
-    }
-    for cmd in [
-        &["wl-paste", "-n"][..],
-        &["xclip", "-selection", "clipboard", "-o"][..],
-        &["xsel", "--clipboard", "--output"][..],
-    ] {
-        if let Ok(out) = Command::new(cmd[0]).args(&cmd[1..]).output() {
-            if out.status.success() {
-                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !t.is_empty() {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
 }
 
 async fn run_app(terminal: &mut DefaultTerminal, dir: PathBuf, connections: u32) -> Result<()> {
@@ -686,7 +682,7 @@ fn ui(f: &mut Frame, app: &App) {
     f.render_widget(status, chunks[4]);
 
     let help = Paragraph::new(Line::from(Span::styled(
-        " a:add+clipboard  Enter:queue  Ctrl+V:paste  p:pause  c:cancel  d:dir  v:ventoy  q:quit ",
+        " a:clipboard→URL  Enter:queue  Ctrl+V:paste  streams auto  p:pause  v:ventoy  q:quit ",
         Style::default().fg(DIM),
     )));
     f.render_widget(help, chunks[5]);

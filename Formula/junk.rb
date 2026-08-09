@@ -1,27 +1,22 @@
 # Homebrew formula for junk
-# Install (tap this repo):
 #   brew tap xstrawman/junk https://github.com/xstrawman/junk
 #   brew install junk
-#
-# Or one-shot from raw formula (build from source):
-#   brew install --build-from-source ./Formula/junk.rb
-#
-# HEAD (latest main):
 #   brew install --HEAD junk
 
 class Junk < Formula
-  desc "Super-fast multi-connection HTTP(S) downloader with arcade TUI"
+  desc "Hypersonic multi-conn downloader + streams (aria2 × ytdl × ffmpeg)"
   homepage "https://github.com/xstrawman/junk"
   license "MIT"
-  version "0.1.1"
+  version "0.2.0"
 
-  # Stable source archive — sha256 filled for the v0.1.1 tag
-  url "https://github.com/xstrawman/junk/archive/refs/tags/v0.1.1.tar.gz"
-  sha256 "f1f296e0994f0b67a04c2feeadcad90744a5c92198ca13434c74b4255ddb0d55"
+  url "https://github.com/xstrawman/junk/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "REPLACE_AFTER_TAG"
 
   head "https://github.com/xstrawman/junk.git", branch: "master"
 
   depends_on "rust" => :build
+  depends_on "ffmpeg" => :recommended
+  depends_on "yt-dlp" => :recommended
 
   on_linux do
     depends_on "pkgconf" => :build
@@ -33,17 +28,20 @@ class Junk < Formula
 
   def caveats
     <<~EOS
-      Quick start:
-        junk                          # arcade TUI (a = add URL from clipboard)
-        junk https://example.com/f    # CLI multi-conn download
-        junk --ventoy https://…/iso   # distrohopper: ISO → Ventoy
+      junk = multi-conn HTTP × yt-dlp streams × ffmpeg
 
-      Default download dir: ~/Downloads (override with -d DIR)
+        junk                          # clipboard URL → download (ASCII)
+        junk <url>                    # file or stream auto-detect
+        junk --audio <url>            # MP3 → ~/Music
+        junk tui                      # arcade TUI (great on Mac)
+        junk --ventoy https://…/iso   # ISO → Ventoy
+
+      Streaming sites need yt-dlp + ffmpeg (brew install yt-dlp ffmpeg).
     EOS
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/junk --version")
-    assert_match "ventoy", shell_output("#{bin}/junk --help")
+    assert_match "stream", shell_output("#{bin}/junk --help")
   end
 end
