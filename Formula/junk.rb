@@ -10,7 +10,7 @@ class Junk < Formula
   version "0.2.0"
 
   url "https://github.com/xstrawman/junk/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "REPLACE_AFTER_TAG"
+  sha256 "9f812cfafb6b1a182115ac9f46e2f37283c23a524fc390f0163a0f129918028f"
 
   head "https://github.com/xstrawman/junk.git", branch: "master"
 
