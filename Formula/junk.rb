@@ -17,7 +17,7 @@ class Junk < Formula
 
   # Stable source archive — sha256 filled for the v0.1.1 tag
   url "https://github.com/xstrawman/junk/archive/refs/tags/v0.1.1.tar.gz"
-  sha256 "REPLACE_AFTER_TAG"
+  sha256 "f1f296e0994f0b67a04c2feeadcad90744a5c92198ca13434c74b4255ddb0d55"
 
   head "https://github.com/xstrawman/junk.git", branch: "master"
 
