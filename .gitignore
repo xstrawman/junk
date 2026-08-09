@@ -2,3 +2,6 @@
 **/target
 *.swp
 .DS_Store
+.flatpak-builder/
+packaging/flatpak/build-dir/
+packaging/flatpak/build-src/

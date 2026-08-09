@@ -35,6 +35,20 @@ soar add --name junk --pkg-type static \
 Package definition for [soarpkgs](https://github.com/pkgforge/soarpkgs):  
 `packaging/soar/packages/junk/pkg.toml` — see `packaging/soar/README.md`.
 
+## Install with Flatpak
+
+```bash
+flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+cd ~/Projects/apps/junk   # or clone the repo
+flatpak-builder --user --install --force-clean \
+  packaging/flatpak/build-dir \
+  packaging/flatpak/dev.xstrawman.Junk.yml
+
+flatpak run dev.xstrawman.Junk --ventoy https://example.com/distro.iso
+```
+
+Details: `packaging/flatpak/README.md`
+
 ## Build
 
 ```bash

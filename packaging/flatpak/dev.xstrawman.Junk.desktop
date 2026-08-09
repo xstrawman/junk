@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Junk
+GenericName=HTTP Downloader
+Comment=Multi-connection HTTP(S) downloader — CLI + arcade TUI
+Exec=junk
+Terminal=true
+Categories=Network;FileTransfer;ConsoleOnly;
+Keywords=download;aria2;iso;ventoy;multi-conn;
+StartupNotify=false

@@ -1,0 +1,54 @@
+# Flatpak manifest for junk — binary module from GitHub Release (fast local install).
+# Build:
+#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/dev.xstrawman.Junk.yml
+# Run:
+#   flatpak run dev.xstrawman.Junk https://example.com/file.iso
+#   flatpak run dev.xstrawman.Junk --ventoy https://…/ubuntu.iso
+#
+# App ID: dev.xstrawman.Junk
+
+app-id: dev.xstrawman.Junk
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: junk
+
+finish-args:
+  # Downloads need the network
+  - --share=network
+  # Default save location
+  - --filesystem=xdg-download:create
+  # Distrohopper: ISO straight onto Ventoy sticks
+  - --filesystem=/run/media:create
+  - --filesystem=/media:create
+  - --filesystem=/mnt:create
+  # Allow -d ~/somewhere
+  - --filesystem=home
+  # TUI inherits the host terminal when you flatpak run …
+
+modules:
+  - name: junk
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 junk-${FLATPAK_ARCH}-unknown-linux-musl /app/bin/junk
+      - install -Dm644 dev.xstrawman.Junk.desktop /app/share/applications/dev.xstrawman.Junk.desktop
+      - install -Dm644 dev.xstrawman.Junk.metainfo.xml /app/share/metainfo/dev.xstrawman.Junk.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/junk/LICENSE
+    sources:
+      # musl static binaries from v0.1.0 (CI release assets)
+      - type: file
+        only-arches: [x86_64]
+        url: https://github.com/xstrawman/junk/releases/download/v0.1.0/junk-x86_64-unknown-linux-musl
+        sha256: ec3a1eb0da00bb73e3c9c3ad546b00c50a4717618bd108e125ea1629ecf00977
+        dest-filename: junk-x86_64-unknown-linux-musl
+      - type: file
+        only-arches: [aarch64]
+        url: https://github.com/xstrawman/junk/releases/download/v0.1.0/junk-aarch64-unknown-linux-musl
+        sha256: 7201354639c6b9424360e8f61587b4d32e3b5ea2ac6d475d484a39cdb0ed2c3b
+        dest-filename: junk-aarch64-unknown-linux-musl
+      - type: file
+        path: dev.xstrawman.Junk.desktop
+      - type: file
+        path: dev.xstrawman.Junk.metainfo.xml
+      - type: file
+        path: ../../LICENSE

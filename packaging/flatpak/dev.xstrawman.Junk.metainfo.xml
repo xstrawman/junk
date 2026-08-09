@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>dev.xstrawman.Junk</id>
+  <name>Junk</name>
+  <summary>Super-fast multi-connection HTTP(S) downloader with arcade TUI</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="dev.xstrawman">
+    <name>xstrawman</name>
+  </developer>
+  <url type="homepage">https://github.com/xstrawman/junk</url>
+  <url type="bugtracker">https://github.com/xstrawman/junk/issues</url>
+  <description>
+    <p>
+      Junk is a pure-Rust multi-connection HTTP(S) downloader (aria2-style ranged
+      GETs) with a neon arcade terminal UI. Progress fills a giant ASCII syringe
+      into a junkie's arm. Distrohopper mode can send mainline ISOs straight to a
+      mounted Ventoy stick.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Parallel HTTP range downloads with resume</li>
+      <li>CLI: junk URL — and interactive TUI</li>
+      <li>Ventoy auto-detect: junk --ventoy URL</li>
+    </ul>
+  </description>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+    <category>ConsoleOnly</category>
+  </categories>
+  <provides>
+    <binary>junk</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-08-09">
+      <description>
+        <p>Initial release: multi-conn engine, arcade TUI, Ventoy distrohopper mode.</p>
+      </description>
+      <url>https://github.com/xstrawman/junk/releases/tag/v0.1.0</url>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>
