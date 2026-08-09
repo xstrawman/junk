@@ -1,0 +1,19 @@
+[package]
+name = "junk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fast multi-conn downloader — CLI + arcade syringe TUI"
+
+[[bin]]
+name = "junk"
+path = "src/main.rs"
+
+[dependencies]
+junk-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
