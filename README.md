@@ -35,6 +35,21 @@ soar add --name junk --pkg-type static \
 Package definition for [soarpkgs](https://github.com/pkgforge/soarpkgs):  
 `packaging/soar/packages/junk/pkg.toml` — see `packaging/soar/README.md`.
 
+## Install with Homebrew
+
+```bash
+brew tap xstrawman/junk https://github.com/xstrawman/junk
+brew install junk
+```
+
+Latest git:
+
+```bash
+brew install --HEAD xstrawman/junk/junk
+```
+
+Details: `packaging/homebrew/README.md` · formula: `Formula/junk.rb`
+
 ## Install with Flatpak
 
 ```bash
