@@ -1,10 +1,10 @@
 package dev.xstrawman.junk.download
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
@@ -12,15 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.coroutineContext
 
 /**
- * Magnet / torrent support.
- *
- * Full libtorrent is heavy for a first APK; this implementation:
- * 1. Parses magnet display name / hash for UI
- * 2. Tries public torrent→HTTP gateway mirrors when available (best-effort)
- * 3. Falls back to clear error if no HTTP path exists
- *
- * For production "real" DHT magnets, ship libtorrent4j native .so later.
- * Progress uses the same syringe UI as multi-conn HTTP.
+ * Magnet support: parse + try HTTP webseeds from .torrent metadata.
+ * Full DHT peer swarm is a later libtorrent drop — we still accept magnet: links.
  */
 class MagnetDownloader(
     private val http: MultiConnDownloader = MultiConnDownloader(),
@@ -59,29 +52,23 @@ class MagnetDownloader(
         return MagnetInfo(hash, name, tr)
     }
 
-    /**
-     * Attempt download. Strategy:
-     * - If we can resolve a direct HTTP(S) from common webtorrent / cache gateways, multi-conn it.
-     * - Else report that full DHT needs the next native libtorrent build (still show arcade animation).
-     */
     suspend fun download(
+        context: Context,
         magnet: String,
-        destDir: File,
         onProgress: (DownloadProgress) -> Unit,
-    ): File = withContext(Dispatchers.IO) {
+    ): java.io.File = withContext(Dispatchers.IO) {
         cancel.set(false)
         val info = parseMagnet(magnet)
         val label = info.displayName ?: info.infoHash?.take(12) ?: "magnet"
+        val drawer = JunkDrawer.dir(context).absolutePath
         onProgress(
-            DownloadProgress(0, 0, 0.0, 0, label, "magnet-resolve"),
+            DownloadProgress(0, 0, 0.0, 0, label, "magnet-resolve", savedPath = drawer),
         )
 
-        val hash = info.infoHash
-            ?: error("magnet missing btih info hash")
+        val hash = info.infoHash ?: error("magnet missing btih info hash")
 
-        // Simulated resolve phase for UI (syringe priming)
         var p = 0
-        while (p < 15 && coroutineContext.isActive && !cancel.get()) {
+        while (p < 12 && coroutineContext.isActive && !cancel.get()) {
             onProgress(
                 DownloadProgress(
                     bytesDone = p.toLong(),
@@ -89,36 +76,37 @@ class MagnetDownloader(
                     bytesPerSec = 0.0,
                     connections = 0,
                     fileName = label,
-                    phase = "magnet-dht",
+                    phase = "magnet-resolve",
+                    savedPath = drawer,
                 ),
             )
-            delay(80)
+            delay(60)
             p++
         }
 
-        // Try downloading .torrent via itorrents then parse for webseed HTTP urls
         val torrentUrl = "https://itorrents.org/torrent/$hash.torrent"
         try {
             val webseeds = fetchWebSeeds(torrentUrl)
             if (webseeds.isNotEmpty()) {
-                // Multi-conn first webseed URL
-                return@withContext http.download(webseeds.first(), destDir, onProgress)
+                return@withContext http.download(
+                    context,
+                    webseeds.first(),
+                    preferredName = info.displayName,
+                    onProgress = onProgress,
+                )
             }
         } catch (_: Exception) {
-            // fall through
         }
 
-        // Honest failure with arcade-friendly message — full DHT in next APK drop
         error(
             "Magnet $hash: no HTTP webseed found. " +
-                "Full DHT/peer magnet support ships with libtorrent native engine next. " +
-                "Direct http(s)/.mkv links still inject at full speed.",
+                "Save path would be $drawer. " +
+                "Use a direct http(s)/.mkv link for full multi-conn speed, " +
+                "or wait for native DHT/libtorrent in a later build.",
         )
     }
 
     private fun fetchWebSeeds(torrentUrl: String): List<String> {
-        // Minimal bencode scrape is heavy; skip deep parse for v1 APK.
-        // Placeholder for future torrent file → url-list webseed extraction.
         val conn = URL(torrentUrl).openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
         conn.readTimeout = 8000
@@ -137,7 +125,6 @@ class MagnetDownloader(
         }
     }
 
-    /** Very small search for url-list / http(s) URLs inside torrent bytes. */
     private fun extractWebSeedsFromBencode(data: ByteArray): List<String> {
         val text = data.toString(Charsets.ISO_8859_1)
         val regex = Regex("""https?://[^\s\x00-\x1f"<>]{8,}""")

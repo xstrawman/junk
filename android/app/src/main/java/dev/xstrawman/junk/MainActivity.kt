@@ -1,12 +1,19 @@
 package dev.xstrawman.junk
 
+import android.Manifest
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -49,6 +56,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import dev.xstrawman.junk.download.JunkDrawer
 import dev.xstrawman.junk.ui.Arcade
 import dev.xstrawman.junk.ui.ArcadeStage
 import kotlinx.coroutines.delay
@@ -56,21 +65,84 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     private val vm: JunkViewModel by viewModels()
 
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        vm.refreshSavePath()
+        ensureAllFilesAccessIfNeeded()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestStorage()
         handleIntent(intent)
-        // Auto-grab clipboard on launch (like desktop junk)
         maybeClipboard()
+        vm.refreshSavePath()
 
         setContent {
-            JunkApp(vm = vm, onPasteClick = { maybeClipboard(force = true) })
+            JunkApp(
+                vm = vm,
+                onPasteClick = { maybeClipboard(force = true) },
+                onGrantStorage = {
+                    requestStorage()
+                    ensureAllFilesAccessIfNeeded()
+                },
+            )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        vm.refreshSavePath()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
+    }
+
+    private fun requestStorage() {
+        val need = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT <= 28) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                need += Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }
+        } else if (Build.VERSION.SDK_INT <= 32) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                need += Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+        }
+        if (need.isNotEmpty()) {
+            permissionLauncher.launch(need.toTypedArray())
+        } else {
+            ensureAllFilesAccessIfNeeded()
+        }
+    }
+
+    /** Android 11+: writing freely under public Downloads/JUNK DRAWER. */
+    private fun ensureAllFilesAccessIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    try {
+                        startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+        JunkDrawer.dir(this)
+        vm.refreshSavePath()
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -102,7 +174,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
+fun JunkApp(
+    vm: JunkViewModel,
+    onPasteClick: () -> Unit,
+    onGrantStorage: () -> Unit,
+) {
     val blink by rememberInfiniteTransition(label = "blink").animateFloat(
         initialValue = 0.4f,
         targetValue = 1f,
@@ -142,17 +218,44 @@ fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
             textAlign = TextAlign.Center,
         )
         Text(
-            text = "90s arcade multi-conn · files · mkv · magnets",
+            text = "90s arcade multi-conn · YouTube · mkv · magnets",
             color = Arcade.NeonCyan.copy(alpha = blink),
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
         )
-        Text(
-            text = "original cartoon line · syringe brain-load meter",
-            color = Arcade.Dim,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-        )
+
+        Spacer(Modifier.height(8.dp))
+
+        // Always-visible save location
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(Arcade.Panel, RoundedCornerShape(8.dp))
+                .border(2.dp, Arcade.NeonGreen, RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        ) {
+            Text(
+                "JUNK DRAWER (all downloads)",
+                color = Arcade.NeonGreen,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+            )
+            Text(
+                vm.savePath,
+                color = Arcade.NeonYellow,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+            )
+            TextButton(onClick = onGrantStorage) {
+                Text(
+                    "GRANT STORAGE IF NEEDED",
+                    color = Arcade.NeonCyan,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                )
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -167,7 +270,6 @@ fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
 
         Spacer(Modifier.height(8.dp))
 
-        // HUD
         Row(
             Modifier
                 .fillMaxWidth()
@@ -195,7 +297,7 @@ fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
             ),
             placeholder = {
                 Text(
-                    "paste URL · .mkv · magnet:?xt=urn:btih:…",
+                    "YouTube · https://…/file.iso · .mkv · magnet:?",
                     color = Arcade.Dim,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
@@ -218,10 +320,7 @@ fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
         Spacer(Modifier.height(10.dp))
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(
-                onClick = onPasteClick,
-                modifier = Modifier.weight(1f),
-            ) {
+            TextButton(onClick = onPasteClick, modifier = Modifier.weight(1f)) {
                 Text("📋 PASTE", color = Arcade.NeonCyan, fontFamily = FontFamily.Monospace)
             }
             Button(
@@ -269,14 +368,6 @@ fun JunkApp(vm: JunkViewModel, onPasteClick: () -> Unit) {
             )
         }
 
-        Spacer(Modifier.height(16.dp))
-        Text(
-            text = "Saves to app Downloads/junk  ·  multi-conn HTTP  ·  magnet best-effort",
-            color = Arcade.Dim,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            textAlign = TextAlign.Center,
-        )
         Spacer(Modifier.height(24.dp))
     }
 }

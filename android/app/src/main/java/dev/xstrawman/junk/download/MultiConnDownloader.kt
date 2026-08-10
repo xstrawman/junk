@@ -1,5 +1,8 @@
 package dev.xstrawman.junk.download
 
+import android.content.Context
+import android.os.Build
+import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -25,17 +28,18 @@ data class DownloadProgress(
     val phase: String,
     val error: String? = null,
     val done: Boolean = false,
+    /** Human path: …/Download/JUNK DRAWER/file */
+    val savedPath: String? = null,
 )
 
 /**
- * aria2-style multi-connection HTTP(S) downloader for Android.
- * Supports direct files, MKV links, large ISOs, etc.
+ * aria2-style multi-connection HTTP(S) → always into public Downloads/JUNK DRAWER.
  */
 class MultiConnDownloader(
     private val connections: Int = 8,
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build(),
@@ -45,73 +49,125 @@ class MultiConnDownloader(
     fun requestCancel() = cancel.set(true)
 
     suspend fun download(
+        context: Context,
         url: String,
-        destDir: File,
+        preferredName: String? = null,
         onProgress: (DownloadProgress) -> Unit,
     ): File = withContext(Dispatchers.IO) {
         cancel.set(false)
-        destDir.mkdirs()
+        val drawer = JunkDrawer.dir(context)
+        if (!drawer.exists() && !drawer.mkdirs()) {
+            error("Cannot create ${drawer.absolutePath} — grant storage permission")
+        }
 
-        val fileName = guessFileName(url)
+        var fileName = preferredName?.takeIf { it.isNotBlank() } ?: guessFileName(url)
+        fileName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(180)
+        if (fileName.isBlank()) fileName = "download.bin"
+
         onProgress(
-            DownloadProgress(0, 0, 0.0, 0, fileName, "connecting"),
+            DownloadProgress(0, 0, 0.0, 0, fileName, "connecting", savedPath = drawer.absolutePath),
         )
 
-        val head = client.newCall(
-            Request.Builder().url(url).head().build(),
-        ).execute()
-
+        val head = client.newCall(Request.Builder().url(url).head().build()).execute()
         var total = head.header("Content-Length")?.toLongOrNull() ?: -1L
         var acceptRanges = head.header("Accept-Ranges")?.contains("bytes", true) == true
         val finalUrl = head.request.url.toString()
         head.close()
 
         if (total <= 0L || !acceptRanges) {
-            // Probe with ranged GET
             val probe = client.newCall(
-                Request.Builder()
-                    .url(url)
-                    .header("Range", "bytes=0-0")
-                    .build(),
+                Request.Builder().url(url).header("Range", "bytes=0-0").build(),
             ).execute()
             acceptRanges = probe.code == 206 || probe.header("Content-Range") != null
             probe.header("Content-Range")?.let { cr ->
-                val totalStr = cr.substringAfterLast('/')
-                total = totalStr.toLongOrNull() ?: total
+                total = cr.substringAfterLast('/').toLongOrNull() ?: total
             }
-            if (total <= 0L) {
-                total = probe.header("Content-Length")?.toLongOrNull() ?: -1L
-            }
+            if (total <= 0L) total = probe.header("Content-Length")?.toLongOrNull() ?: -1L
             probe.close()
         }
 
-        val outName = fileName
-        val partFile = File(destDir, "$outName.junk.part")
-        val finalFile = File(destDir, outName)
+        val outFile = uniqueFile(drawer, fileName)
+        val partFile = File(drawer, outFile.name + ".junk.part")
 
         if (total > 0 && acceptRanges && connections > 1) {
-            multiDownload(finalUrl, partFile, total, onProgress, outName)
+            multiDownload(finalUrl.ifBlank { url }, partFile, total, onProgress, outFile.name)
         } else {
-            singleDownload(finalUrl.ifBlank { url }, partFile, total, onProgress, outName)
+            singleDownload(finalUrl.ifBlank { url }, partFile, total, onProgress, outFile.name)
         }
 
-        if (finalFile.exists()) finalFile.delete()
-        if (!partFile.renameTo(finalFile)) {
-            partFile.copyTo(finalFile, overwrite = true)
+        if (cancel.get()) {
+            partFile.delete()
+            error("cancelled")
+        }
+
+        if (outFile.exists()) outFile.delete()
+        if (!partFile.renameTo(outFile)) {
+            partFile.copyTo(outFile, overwrite = true)
             partFile.delete()
         }
+
+        // Also register in MediaStore so it shows in Downloads UI (API 29+)
+        indexInMediaStore(context, outFile)
+
+        val path = outFile.absolutePath
         onProgress(
             DownloadProgress(
-                bytesDone = finalFile.length(),
-                bytesTotal = finalFile.length(),
+                bytesDone = outFile.length(),
+                bytesTotal = outFile.length(),
                 bytesPerSec = 0.0,
                 connections = 0,
-                fileName = outName,
+                fileName = outFile.name,
                 phase = "done",
                 done = true,
+                savedPath = path,
             ),
         )
-        finalFile
+        outFile
+    }
+
+    private fun indexInMediaStore(context: Context, file: File) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        try {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, JunkDrawer.guessMime(file.name))
+                put(android.provider.MediaStore.Downloads.RELATIVE_PATH, JunkDrawer.RELATIVE_PATH)
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                put(android.provider.MediaStore.Downloads.SIZE, file.length())
+            }
+            // If file already on disk in that folder, scan is enough
+            android.media.MediaScannerConnection.scanFile(
+                context,
+                arrayOf(file.absolutePath),
+                arrayOf(JunkDrawer.guessMime(file.name)),
+                null,
+            )
+            // Avoid duplicate MediaStore rows if scan is enough
+            values.clear()
+        } catch (_: Exception) {
+            try {
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(file.absolutePath),
+                    null,
+                    null,
+                )
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun uniqueFile(dir: File, name: String): File {
+        val f = File(dir, name)
+        if (!f.exists()) return f
+        val stem = name.substringBeforeLast('.', name)
+        val ext = if (name.contains('.')) name.substringAfterLast('.') else ""
+        for (i in 1..999) {
+            val n = if (ext.isEmpty()) "$stem-$i" else "$stem-$i.$ext"
+            val c = File(dir, n)
+            if (!c.exists()) return c
+        }
+        return File(dir, "$stem-dup.$ext")
     }
 
     private suspend fun multiDownload(
@@ -123,7 +179,8 @@ class MultiConnDownloader(
     ) = coroutineScope {
         RandomAccessFile(partFile, "rw").use { it.setLength(total) }
 
-        val n = min(connections, 16).coerceAtLeast(1)
+        // Never more segments than bytes (avoids chunk=0 / invalid Range)
+        val n = min(connections, 16).toLong().coerceAtMost(total).coerceAtLeast(1L).toInt()
         val chunk = total / n
         val done = AtomicLong(0)
         val active = AtomicLong(0)
@@ -136,13 +193,21 @@ class MultiConnDownloader(
                 if (cancel.get()) return@async
                 val from = i * chunk
                 val to = if (i == n - 1) total - 1 else (i + 1) * chunk - 1
+                if (from > to) return@async
                 var attempt = 0
+                // Segment-local credit is exception-safe: downloadRange updates this
+                // even when it throws mid-stream.
+                val segDone = AtomicLong(0)
                 while (attempt < 4 && !cancel.get() && !err.get()) {
                     attempt++
                     try {
-                        downloadRange(url, partFile, from, to, done, active)
+                        downloadRange(url, partFile, from, to, done, active, segDone)
                         return@async
                     } catch (e: Exception) {
+                        // Roll back only this segment's credit, then retry from from+0
+                        // by resetting segDone (file bytes may be incomplete; rewrite range).
+                        val rolled = segDone.getAndSet(0)
+                        if (rolled > 0) done.addAndGet(-rolled)
                         if (attempt >= 4) {
                             err.set(true)
                             errMsg = e.message
@@ -152,10 +217,9 @@ class MultiConnDownloader(
             }
         }
 
-        // Progress ticker
         val ticker = async(Dispatchers.IO) {
             while (coroutineContext.isActive && !cancel.get() && done.get() < total && !err.get()) {
-                val d = done.get()
+                val d = done.get().coerceIn(0, total)
                 val elapsed = (System.nanoTime() - start) / 1e9
                 val rate = if (elapsed > 0) d / elapsed else 0.0
                 onProgress(
@@ -166,6 +230,7 @@ class MultiConnDownloader(
                         connections = active.get().toInt(),
                         fileName = fileName,
                         phase = "downloading",
+                        savedPath = partFile.parent,
                     ),
                 )
                 Thread.sleep(100)
@@ -179,6 +244,10 @@ class MultiConnDownloader(
         if (err.get()) error(errMsg ?: "segment failed")
     }
 
+    /**
+     * Writes [from]..[to] into [partFile]. Updates [done] (global) and [segDone] (segment)
+     * atomically as bytes land — so callers can roll back [segDone] on failure.
+     */
     private fun downloadRange(
         url: String,
         partFile: File,
@@ -186,6 +255,7 @@ class MultiConnDownloader(
         to: Long,
         done: AtomicLong,
         active: AtomicLong,
+        segDone: AtomicLong,
     ) {
         active.incrementAndGet()
         try {
@@ -194,26 +264,30 @@ class MultiConnDownloader(
                 .header("Range", "bytes=$from-$to")
                 .build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful && resp.code != 206) {
-                    error("HTTP ${resp.code}")
-                }
+                if (!resp.isSuccessful && resp.code != 206) error("HTTP ${resp.code}")
                 val body = resp.body ?: error("empty body")
                 RandomAccessFile(partFile, "rw").use { raf ->
                     raf.seek(from)
-                    val buf = ByteArray(64 * 1024)
-                    var written = 0L
-                    val need = to - from + 1
+                    val buf = ByteArray(256 * 1024)
+                    var pos = from
+                    val endInclusive = to
                     body.byteStream().use { input ->
-                        while (written < need && !cancel.get()) {
+                        while (pos <= endInclusive && !cancel.get()) {
                             val r = input.read(buf)
                             if (r < 0) break
-                            raf.write(buf, 0, r)
-                            written += r
-                            done.addAndGet(r.toLong())
+                            val allow = (endInclusive - pos + 1).toInt().coerceAtMost(r)
+                            raf.write(buf, 0, allow)
+                            pos += allow
+                            val add = allow.toLong()
+                            done.addAndGet(add)
+                            segDone.addAndGet(add)
+                            if (allow < r) break
                         }
                     }
-                    if (written < need && !cancel.get()) {
-                        error("short read $written/$need")
+                    val need = to - from + 1
+                    val got = segDone.get()
+                    if (got < need && !cancel.get()) {
+                        error("short read $got/$need")
                     }
                 }
             }
@@ -234,12 +308,14 @@ class MultiConnDownloader(
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
             val body = resp.body ?: error("empty body")
+            // 0 = unknown total → UI must NOT treat as 100%
             val total = knownTotal.takeIf { it > 0 }
-                ?: body.contentLength().takeIf { it > 0 } ?: -1L
+                ?: body.contentLength().takeIf { it > 0 }
+                ?: 0L
             var done = 0L
             partFile.outputStream().use { out ->
                 body.byteStream().use { input ->
-                    val buf = ByteArray(64 * 1024)
+                    val buf = ByteArray(256 * 1024)
                     while (!cancel.get()) {
                         val r = input.read(buf)
                         if (r < 0) break
@@ -250,11 +326,12 @@ class MultiConnDownloader(
                         onProgress(
                             DownloadProgress(
                                 bytesDone = done,
-                                bytesTotal = if (total > 0) total else done,
+                                bytesTotal = total, // 0 if unknown
                                 bytesPerSec = rate,
                                 connections = 1,
                                 fileName = fileName,
-                                phase = "downloading",
+                                phase = if (total > 0) "downloading" else "downloading-unknown-size",
+                                savedPath = partFile.parent,
                             ),
                         )
                     }
@@ -266,7 +343,13 @@ class MultiConnDownloader(
 
     private fun guessFileName(url: String): String {
         val path = url.substringBefore('?').substringAfterLast('/')
-        val clean = path.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(180)
-        return if (clean.isBlank()) "download.bin" else clean
+        val clean = path
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .trim('.')
+            .take(180)
+        return when {
+            clean.isBlank() || clean == "." || clean == ".." -> "download.bin"
+            else -> clean
+        }
     }
 }

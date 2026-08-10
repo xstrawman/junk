@@ -46,10 +46,10 @@ Official F-Droid.org uses *their* key after a source rebuild — metadata draft:
 2. Tap **PASTE** (or share a link into the app)  
 3. **START INJECTION**  
 4. Watch the cabinet meter + brain-load line  
-5. Files land in app-specific `Downloads/junk/`
+5. Files always land in public **`Download/JUNK DRAWER`** (shown on screen).
 
 ## Notes
 
 - Characters are **original** yellow arcade heads (not The Simpsons).  
 - Magnets without HTTP webseeds need native libtorrent in a follow-up.  
-- Streaming sites (YouTube) are CLI/desktop via yt-dlp for now.
+- YouTube / extractable streams use **NewPipe Extractor** + multi-conn (progressive preferred).

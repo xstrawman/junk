@@ -85,9 +85,9 @@ brew install junk
 # also: brew install yt-dlp ffmpeg
 ```
 
-### Soar / Flatpak
+### Flatpak
 
-See `packaging/soar/` and `packaging/flatpak/`.
+See `packaging/flatpak/`.
 
 ## Layout
 

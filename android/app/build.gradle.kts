@@ -103,4 +103,6 @@ dependencies {
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // YouTube / peer-tube / etc. stream URL extraction (no Python yt-dlp on phone)
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:0.24.6")
 }
