@@ -16,3 +16,4 @@ android/keystore.properties
 android/*.jks
 android/*.keystore
 dist/*.apk
+dist/*.idsig
