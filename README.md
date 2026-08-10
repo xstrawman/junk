@@ -52,6 +52,22 @@ junk tui
 - Streams auto-route to `~/Videos`  
 - Same engine as CLI  
 
+## Android APK (arcade cabinet)
+
+90s cabinet UI: paste **URL / MKV / magnet**, multi-conn download, syringe → cartoon brain-load line.
+
+```bash
+cd android
+export ANDROID_HOME=~/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+./.gradle-dist/bin/gradle :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Built APK (when present): `dist/junk-0.2.0-arcade-debug.apk`  
+Details: `android/README.md`
+
+**Note:** Characters are original yellow arcade noggins (not The Simpsons). Full DHT magnets need libtorrent in a follow-up; HTTP webseed magnets + direct files work.
+
 ## Install
 
 ### From source

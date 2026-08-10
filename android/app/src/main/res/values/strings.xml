@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JUNK</string>
+    <string name="tagline">arcade multi-conn · files · magnets</string>
+    <string name="paste_hint">paste URL · MKV · magnet…</string>
+    <string name="start">START INJECTION</string>
+    <string name="cancel">CANCEL</string>
+</resources>

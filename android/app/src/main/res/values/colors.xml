@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cabinet_black">#FF0A0A18</color>
+    <color name="neon_yellow">#FFFFCC00</color>
+    <color name="neon_magenta">#FFFF00AA</color>
+    <color name="neon_cyan">#FF00FFDD</color>
+    <color name="skin_yellow">#FFFFD93D</color>
+</resources>

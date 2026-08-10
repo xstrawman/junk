@@ -1,0 +1,11 @@
+#!/bin/sh
+# Minimal gradle wrapper launcher — prefers system gradle, else downloaded dist
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$DIR/.gradle-dist/bin/gradle" ]; then
+  exec "$DIR/.gradle-dist/bin/gradle" "$@"
+fi
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle "$@"
+fi
+echo "Gradle not found. Extract gradle-bin into android/.gradle-dist" >&2
+exit 1

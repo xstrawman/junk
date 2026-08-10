@@ -5,3 +5,10 @@
 .flatpak-builder/
 packaging/flatpak/build-dir/
 packaging/flatpak/build-src/
+android/.gradle/
+android/.gradle-dist/
+android/app/build/
+android/build/
+android/local.properties
+android/.idea/
+dist/*.apk
