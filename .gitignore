@@ -11,4 +11,8 @@ android/app/build/
 android/build/
 android/local.properties
 android/.idea/
+android/keystore/
+android/keystore.properties
+android/*.jks
+android/*.keystore
 dist/*.apk

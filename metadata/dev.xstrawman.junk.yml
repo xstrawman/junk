@@ -1,0 +1,55 @@
+# F-Droid metadata (fdroiddata style)
+# https://f-droid.org/docs/Build_Metadata_Reference/
+#
+# For official F-Droid.org: open a PR to
+#   https://gitlab.com/fdroid/fdroiddata
+# with this file under metadata/dev.xstrawman.junk.yml
+# They rebuild from source and sign with the F-Droid key (not yours).
+#
+# For a private F-Droid repo you host: use android/scripts/fdroid-sign.sh
+# with *your* keystore, then `fdroid update`.
+
+Categories:
+  - Internet
+  - Multimedia
+License: MIT
+AuthorName: xstrawman
+WebSite: https://github.com/xstrawman/junk
+SourceCode: https://github.com/xstrawman/junk
+IssueTracker: https://github.com/xstrawman/junk/issues
+
+AutoName: JUNK
+Summary: Arcade multi-conn downloader for files, MKV links, and magnets
+Description: |-
+    JUNK is a 90s arcade-cabinet style downloader.
+
+    Paste an HTTP(S) URL, direct .mkv link, or magnet URI. Multi-connection
+    HTTP downloads run with a syringe progress meter and a line of original
+    cartoon characters (not third-party IP).
+
+    Desktop companion (CLI/TUI) lives in the same repo: multi-conn HTTP,
+    yt-dlp streams, ffmpeg merge, Ventoy mode.
+
+RepoType: git
+Repo: https://github.com/xstrawman/junk.git
+
+Builds:
+  - versionName: 0.2.0-arcade
+    versionCode: 20
+    commit: master
+    subdir: android
+    gradle:
+      - yes
+    output: app/build/outputs/apk/release/app-release-unsigned.apk
+    # F-Droid signs after a successful reproducible/unsigned build
+    prebuild: sdk.dir=$$SDK$$
+    scanignore:
+      - android/.gradle-dist
+      - android/keystore
+      - target
+      - dist
+
+AutoUpdateMode: None
+UpdateCheckMode: Tags
+CurrentVersion: 0.2.0-arcade
+CurrentVersionCode: 20

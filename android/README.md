@@ -28,6 +28,18 @@ Install on device/emulator:
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## F-Droid-style signing (your key)
+
+```bash
+chmod +x scripts/fdroid-sign.sh
+./scripts/fdroid-sign.sh
+# → ../dist/junk-fdroid-signed.apk
+```
+
+Creates an RSA-4096 keystore (gitignored). Full notes: **[FDROID.md](./FDROID.md)**.
+
+Official F-Droid.org uses *their* key after a source rebuild — metadata draft: `../metadata/dev.xstrawman.junk.yml`.
+
 ## Use
 
 1. Open **JUNK CABINET**  
